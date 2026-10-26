@@ -74,10 +74,11 @@ flowchart LR
   end
 ```
 
-**How one measurement is taken (PyTorch suite):** run the operation 10 times untimed to warm up. Then
-run 5 trials. Each trial records a CUDA event, runs the operation 30 times back to back, records a
-second event and synchronizes once. The 5 per-call averages give the reported mean, median and spread,
-so CPU launch jitter inside the loop doesn't inflate the variance. Each result is appended as a CSV row
+**How one measurement is taken (PyTorch suite):** warm up with untimed runs, then run several trials.
+Each trial records a CUDA event, runs the operation many times back to back, records a second event and
+synchronizes once. The per-trial averages give the reported mean, median and spread, so CPU launch
+jitter inside the loop doesn't inflate the variance. GEMM and roofline use 10 warm-up runs and 5 trials
+of 20 runs; attention uses 5 warm-up runs and 3 trials of 10. Each result is appended as a CSV row
 with the GPU UUID and logged to `RUN_LOG.txt`.
 
 **How the OOM boundary is found (Part D):** sweep sequence lengths until naive attention fails, then
