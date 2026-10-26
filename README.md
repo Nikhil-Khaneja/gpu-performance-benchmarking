@@ -11,6 +11,80 @@ and a roofline / precision / attention / thermal study of an NVIDIA RTX 5090 in 
 | [Naive vs. fused attention](roofline-rtx5090/METRICS.md#part-d--naive-vs-fused-attention) | RTX 5090 | Fused SDPA up to **7.2x** faster; naive attention OOMs at **22,438** tokens (bisected) |
 | [Sustained load](roofline-rtx5090/METRICS.md#part-e--sustained-load-20-min-bf16-matmul) | RTX 5090 | **97.6%** of peak after 20 min, no throttling |
 
+## What this project does
+
+A GPU's spec sheet gives one peak number. Real kernels land somewhere below it, and the gap is set by
+how the kernel uses the hardware. This repo measures that gap and explains it in two parts.
+
+1. **CUDA C from scratch (Tesla T4).** A matrix multiply written by hand in CUDA C (one GPU thread per
+   output element) is checked against a plain CPU loop. Kernel time and host/device copy time are
+   measured separately, and nvprof shows where GPU time goes. Result: the GPU wins from N=256 up, and
+   by **1,527x** at N=4096.
+2. **How close does a real GPU get to its peak? (RTX 5090, PyTorch).** Five experiments on one card:
+   - **Precision:** matmul TFLOPS for FP32, TF32, FP16, BF16 and FP8 as the matrix grows, until each
+     one stops getting faster (plateaus).
+   - **Roofline:** is a kernel limited by memory bandwidth or by compute? A streaming add (0.083
+     FLOPs/byte) and a large matmul (1,365 FLOPs/byte) sit on opposite sides of the ridge point.
+   - **Attention:** naive attention stores the full seq x seq score matrix, so its memory grows as
+     seq². Fused attention (PyTorch `scaled_dot_product_attention`) never stores that matrix. The test
+     measures the speed difference and finds the exact sequence length where naive attention runs out
+     of memory.
+   - **Sustained load:** 20 minutes of BF16 matmul with clocks, power, temperature and throttle flags
+     sampled every 5 s.
+   - **Provenance:** every result row is tagged with the GPU's UUID, and the vendor peak numbers are
+     cross-checked against the NVIDIA whitepaper.
+
+### The roofline in one line
+
+```
+attainable FLOP/s = min( peak compute ,  arithmetic intensity (FLOPs/byte) x memory bandwidth )
+```
+
+On the RTX 5090 (FP32: 104.8 TFLOPS, 1,792 GB/s) the two limits cross at **58.5 FLOPs/byte**. A kernel
+with lower intensity than that is limited by memory bandwidth, and one with higher intensity is limited
+by compute.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph T4["cuda-matmul: CUDA C on Tesla T4"]
+    direction TB
+    IN["Seeded random A, B"] --> CPU["CPU reference<br/>triple loop"]
+    IN --> H2D["cudaMemcpy<br/>host to device"]
+    H2D --> K["matmul_kernel<br/>2D grid, 16x16 blocks<br/>1 thread per C element"]
+    K --> D2H["cudaMemcpy<br/>device to host"]
+    CPU --> CHK{"max abs diff<br/>vs CPU"}
+    D2H --> CHK
+    EV(["CUDA events"]) -. "time each stage" .-> K
+    NV(["nvprof"]) -. "GPU time breakdown" .-> K
+  end
+
+  subgraph R5090["roofline-rtx5090: PyTorch on RTX 5090"]
+    direction TB
+    COM["common/<br/>GPU UUID, CUDA-event timing,<br/>vendor peak specs, CSV + run log"]
+    COM --> A["A: provenance<br/>nvidia-smi + spec check"]
+    COM --> B["B: GEMM TFLOPS<br/>FP32 to FP8 vs N"]
+    COM --> C["C: roofline<br/>add vs matmul"]
+    COM --> D["D: naive vs fused attention<br/>+ OOM bisection"]
+    COM --> E["E: 20-min sustained load<br/>+ nvidia-smi sampler thread"]
+    A & B & C & D & E --> CSV[("results/*.csv<br/>UUID-tagged")]
+    CSV --> FIG["figures/*.png"]
+    CSV --> F["F: summary table"] --> MET["METRICS.md"]
+  end
+```
+
+**How one measurement is taken (PyTorch suite):** run the operation 10 times untimed to warm up. Then
+run 5 trials. Each trial records a CUDA event, runs the operation 30 times back to back, records a
+second event and synchronizes once. The 5 per-call averages give the reported mean, median and spread,
+so CPU launch jitter inside the loop doesn't inflate the variance. Each result is appended as a CSV row
+with the GPU UUID and logged to `RUN_LOG.txt`.
+
+**How the OOM boundary is found (Part D):** sweep sequence lengths until naive attention fails, then
+bisect between the last length that worked and the first that failed, down to a single token
+(22,437 works, 22,438 runs out of memory). The result is checked against the measured memory curve,
+64 bytes per token².
+
 ## Layout
 
 ```
