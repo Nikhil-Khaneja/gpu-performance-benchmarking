@@ -1,0 +1,2 @@
+gpu_uuid,gpu_name,impl,batch,heads,head_dim,dtype,largest_ok_seq_len,smallest_failing_seq_len,resolution
+GPU-41051861-72ca-e198-fd60-2bf89fd2a67b,NVIDIA GeForce RTX 5090,naive,1,16,64,bf16,22437,22438,1
